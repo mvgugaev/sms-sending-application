@@ -1,3 +1,4 @@
+import random
 from unittest.mock import patch
 
 
@@ -5,11 +6,13 @@ class MockResponseData:
 
     def __init__(self, method: str):
         self.method = method
+        self.status_code = 200
+        self.sms_id = random.randint(1, 300)
 
     def json(self):
         mock_mthod_response_data = {
             'send': {
-                'id': 204, 
+                'id': self.sms_id, 
                 'cnt': 1,
             },
             'status': {

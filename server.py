@@ -1,19 +1,26 @@
 import trio
 import json
+import aioredis
+import trio_asyncio
+from database import Database
 from quart import render_template, request, websocket
 from quart_trio import QuartTrio
-from functools import partial, wraps
 from request import request_smsc, SmscApiError
+from hypercorn.trio import serve
+from hypercorn.config import Config as HyperConfig
 from mock import mock_request_smsc
 
 
 app = QuartTrio(__name__)
 
 
-AUTH_DATA = {
+REQUEST_DATA = {
+    'phone': '79653535285',
     'login': 'devman',
     'password': 'Duok4oshvav',
 }
+
+REDIS_URL = 'redis://localhost'
 
 
 @app.route('/')
@@ -43,24 +50,25 @@ async def create():
     form = await parse_form_data(request)
     global request_smsc
     request_smsc = mock_request_smsc(request_smsc)
+    phone, text = REQUEST_DATA['phone'], form['text']
 
     try:
         send_response = await request_smsc(
             'send',
-            AUTH_DATA['login'],
-            AUTH_DATA['password'],
+            REQUEST_DATA['login'],
+            REQUEST_DATA['password'],
             {
-                'phones': '79653535285',
-                'message': form['text'],
+                'phones': phone,
+                'message': text,
             },
         )
 
         status_response = await request_smsc(
             'status',
-            AUTH_DATA['login'],
-            AUTH_DATA['password'],
+            REQUEST_DATA['login'],
+            REQUEST_DATA['password'],
             {
-                'phone': '79653535285',
+                'phone': phone,
                 'id': send_response['id'],
             },
         )
@@ -69,6 +77,26 @@ async def create():
             return {
                 'errorMessage': 'Сообщение не доставлено',
             }
+        
+        redis = await trio_asyncio.aio_as_trio(aioredis.create_redis_pool)(
+            REDIS_URL,
+            encoding='utf-8',
+        )
+
+        try:
+            db = Database(redis)
+
+            await trio_asyncio.aio_as_trio(db.add_sms_mailing)(
+                send_response['id'],
+                phone,
+                text,
+            )
+            sms_ids = await trio_asyncio.aio_as_trio(db.list_sms_mailings)()
+            print('Registered mailings ids', sms_ids)
+        finally:
+            redis.close()
+            await trio_asyncio.aio_as_trio(redis.wait_closed)
+
     except SmscApiError:
         return {
             'errorMessage': 'Потеряно соединение с SMSC.ru',
@@ -81,23 +109,49 @@ async def create():
 
 @app.websocket('/ws')
 async def ws():
-    while True:
-        for i in range(101):
-            data = {
-                "msgType": "SMSMailingStatus",
-                "SMSMailings": [
-                    {
-                    "timestamp": 1123131392.734,
-                    "SMSText": "Сегодня гроза! Будьте осторожны!",
-                    "mailingId": "1",
-                    "totalSMSAmount": 100,
-                    "deliveredSMSAmount": i,
-                    "failedSMSAmount": 0,
-                    },
-                ],
-            }
-            await websocket.send(json.dumps(data))
-            await trio.sleep(1)
+    redis = await trio_asyncio.aio_as_trio(aioredis.create_redis_pool)(
+        REDIS_URL,
+        encoding='utf-8',
+    )
+
+    try:
+        redis_db = Database(redis)
+
+        while True:
+            sms_ids = await trio_asyncio.aio_as_trio(redis_db.list_sms_mailings)()
+            sms_mailings = await trio_asyncio.aio_as_trio(redis_db.get_sms_mailings)(*sms_ids)
+            while True:
+                response_data = {
+                    "msgType": "SMSMailingStatus",
+                    "SMSMailings": [
+                        {
+                            "timestamp": mailing['created_at'],
+                            "SMSText": mailing['text'],
+                            "mailingId": str(mailing['sms_id']),
+                            "totalSMSAmount": mailing['phones_count'],
+                            "deliveredSMSAmount": 0,
+                            "failedSMSAmount": 0,
+                        } for mailing in sms_mailings
+                    ],
+                }
+                await websocket.send(json.dumps(response_data))
+                await trio.sleep(2)
+    finally:
+        redis.close()
+        await trio_asyncio.aio_as_trio(redis.wait_closed)
 
 
-app.run(port=5000)
+async def run_server():
+    async with trio_asyncio.open_loop() as _:
+        config = HyperConfig()
+        config.bind = [f"127.0.0.1:5000"]
+        config.use_reloader = True
+        await serve(app, config)
+
+
+def main():
+    trio.run(run_server)
+
+
+if __name__ == '__main__':
+    main()
