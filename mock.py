@@ -5,7 +5,7 @@ from unittest.mock import patch
 class MockResponseData:
     """
         Replace asks response, allow call .json()
-        and get status_code. 
+        and get status_code.
         Generate random message for each object.
     """
 
@@ -17,7 +17,7 @@ class MockResponseData:
     def json(self) -> dict:
         mock_mthod_response_data = {
             'send': {
-                'id': self.sms_id, 
+                'id': self.sms_id,
                 'cnt': 1,
             },
             'status': {
@@ -40,5 +40,5 @@ def mock_request_smsc(request_smsc):
     async def fake_request_smsc(method: str, *args):
         with patch('asks.get', return_value=MockResponseData(method)):
             return await request_smsc(method, *args)
-    
+
     return fake_request_smsc
