@@ -45,8 +45,8 @@ async def request_smsc(method: str, login: str, password: str, payload: dict):
         raise SmscApiError('Login and password are required.')
     
     request_base_url = f'{REQUEST_DATA["url"]}{method}.php?login={login}&psw={password}'
-
     response = {}
+
     if method == 'send':
         check_payload(('phones', 'message'), payload)
         response = await asks.get(
